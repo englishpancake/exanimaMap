@@ -1,6 +1,6 @@
 # exanimaMap
 
-A minimap overlay for [Exanima](https://www.exanima.com/) that draws your explored path on top of the level map as you play.
+A minimap overlay for [Exanima](https://www.baremettle.com/) that draws your explored path on top of the level map as you play.
 
 Based on [MapExanimaC](https://github.com/staniBosch/MapExanimaC) by staniBosch, requested permission.
 
