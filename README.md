@@ -4,6 +4,8 @@ A minimap overlay for [Exanima](https://www.baremettle.com/) that draws your exp
 
 Based on [MapExanimaC](https://github.com/staniBosch/MapExanimaC) by staniBosch, requested permission.
 
+![Demo](https://media.giphy.com/media/lmtwnKIx08nTBjMMZB/giphy.gif)
+
 ---
 
 ## Features
