@@ -89,6 +89,28 @@ routes/
 
 Delete a `.dat` file to reset that level's trail.
 
+## Building & Releasing
+
+This repo includes a GitHub Actions workflow that automatically builds and publishes a release when you push a version tag.
+
+**To publish a release via GitHub Actions**
+
+1. Make sure your repo has Actions enabled and workflow permissions set to *Read and write* (`Settings → Actions → General → Workflow permissions`)
+2. Push a tag:
+   ```
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+3. GitHub Actions will build the exe, package it with `assets/` into a zip, and create a GitHub Release automatically
+
+The release zip extracts to:
+```
+exanimaMap.exe
+assets/
+  config.ini
+  ... (map images and icons)
+```
+
 ## Credits
 
 - Original project: [MapExanimaC](https://github.com/staniBosch/MapExanimaC) by staniBosch
@@ -99,4 +121,5 @@ Delete a `.dat` file to reset that level's trail.
 ## TODO
 
 Add more detailed maps - You can technically modify the maps freely without any problems; as long as you don't change their size.
+
 Figure out if there's a niceway to detect save, to hold a seperate routes/exploration trail for each save.
