@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild exanimaMap.vcxproj /p:Configuration=Release /p:Platform=x64 /t:Rebuild
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "exanimaMap-${{ github.ref_name }}.zip"
+          $dir = "exanimaMap-${{ github.ref_name }}"
+          New-Item -ItemType Directory -Path $dir -Force
+          Copy-Item "x64\Release\exanimaMap.exe" "$dir\"
+          Copy-Item -Recurse "assets" "$dir\assets"
+          Compress-Archive -Path "$dir\*" -DestinationPath $zip
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: exanimaMap-${{ github.ref_name }}.zip
+
+          generate_release_notes: true
