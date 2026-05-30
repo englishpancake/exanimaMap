@@ -690,15 +690,28 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
                         if (pValue) { dir = wstring(pValue) + L"\\Exanima"; free(pValue); }
                     }
                     wstring backup = dir + L"\\backUP";
-                    filesystem::create_directories(backup);
-                    for (auto& entry : filesystem::directory_iterator(dir)) {
-                        if (entry.path().extension() == L".rsg")
-                            filesystem::copy_file(entry.path(),
-                                backup + L"\\" + entry.path().filename().wstring(),
-                                filesystem::copy_options::overwrite_existing);
+                    try {
+                        if (!filesystem::exists(dir)) {
+                            MessageBoxW(nullptr,
+                                L"Exanima save folder not found.\n"
+                                L"Set pathToExanimaSaves in assets\\config.ini.",
+                                L"Exanima Backup", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                        } else {
+                            filesystem::create_directories(backup);
+                            for (auto& entry : filesystem::directory_iterator(dir)) {
+                                if (entry.path().extension() == L".rsg")
+                                    filesystem::copy_file(entry.path(),
+                                        backup + L"\\" + entry.path().filename().wstring(),
+                                        filesystem::copy_options::overwrite_existing);
+                            }
+                            MessageBoxW(nullptr, L"Backup created.",
+                                        L"Exanima Backup", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                        }
+                    } catch (const filesystem::filesystem_error&) {
+                        MessageBoxW(nullptr,
+                            L"Backup failed.\nCheck that pathToExanimaSaves in assets\\config.ini is correct.",
+                            L"Exanima Backup", MB_OK | MB_ICONERROR | MB_TOPMOST);
                     }
-                    MessageBoxW(nullptr, L"Backup created.",
-                                L"Exanima Backup", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                 }
             }
 
@@ -713,18 +726,29 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
                         if (pValue) { dir = wstring(pValue) + L"\\Exanima"; free(pValue); }
                     }
                     wstring backup = dir + L"\\backUP";
-                    if (!filesystem::exists(backup)) {
-                        MessageBoxW(nullptr, L"No backup found.",
-                                    L"Exanima Backup", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-                    } else {
-                        for (auto& entry : filesystem::directory_iterator(backup)) {
-                            if (entry.path().extension() == L".rsg")
-                                filesystem::copy_file(entry.path(),
-                                    dir + L"\\" + entry.path().filename().wstring(),
-                                    filesystem::copy_options::overwrite_existing);
+                    try {
+                        if (!filesystem::exists(backup)) {
+                            MessageBoxW(nullptr, L"No backup found.",
+                                        L"Exanima Backup", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                        } else if (!filesystem::exists(dir)) {
+                            MessageBoxW(nullptr,
+                                L"Exanima save folder not found.\n"
+                                L"Set pathToExanimaSaves in assets\\config.ini.",
+                                L"Exanima Backup", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                        } else {
+                            for (auto& entry : filesystem::directory_iterator(backup)) {
+                                if (entry.path().extension() == L".rsg")
+                                    filesystem::copy_file(entry.path(),
+                                        dir + L"\\" + entry.path().filename().wstring(),
+                                        filesystem::copy_options::overwrite_existing);
+                            }
+                            MessageBoxW(nullptr, L"Backup loaded.",
+                                        L"Exanima Backup", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                         }
-                        MessageBoxW(nullptr, L"Backup loaded.",
-                                    L"Exanima Backup", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                    } catch (const filesystem::filesystem_error&) {
+                        MessageBoxW(nullptr,
+                            L"Restore failed.\nCheck that pathToExanimaSaves in assets\\config.ini is correct.",
+                            L"Exanima Backup", MB_OK | MB_ICONERROR | MB_TOPMOST);
                     }
                 }
             }
