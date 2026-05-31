@@ -49,10 +49,24 @@ float map_size[]   = { 300, 300 };
 float x_maxSize    = 300.f;
 float scale        = 1.0f;
 
+constexpr float kMarkerW = 35.f * 0.85f;
+constexpr float kMarkerH = 50.f * 0.85f;
+constexpr float kMarkerFullMul = 1.8f;     // extra marker scale in the full-screen map view, aka I can't see shit
+float g_markerAspect = kMarkerW / kMarkerH;
+
+// Camera facing in degrees (written by the memory thread, read by the UI thread).
+// It drives either the marker (static-map default) or the map (rotate_map mode).
+float             g_mapAngle    = 0.f;      // map rotation    (rotate_map = 1)
+float             g_markerAngle = 0.f;      // marker rotation (rotate_map = 0, the default)
+std::atomic<bool> g_camRotOn    { false };  // camera rotation addresses resolved
+bool              g_rotateMap   = false;    // config: rotate_map — turn the map vs the marker
+
 // Runtime memory addresses — loaded from config.ini [MemoryAddresses] at startup.
 LPVOID ADDR_MAP_LVL = nullptr;
 LPVOID ADDR_X_POS   = nullptr;
 LPVOID ADDR_Y_POS   = nullptr;
+LPVOID ADDR_ROT_X   = nullptr;
+LPVOID ADDR_ROT_Y   = nullptr;
 
 // Direct2D objects
 ID2D1Bitmap*           bmp_Map      = nullptr;
@@ -66,6 +80,8 @@ bool  g_quickSave = false;          // config: quickSave
 float g_brushR  = 0.667f;           // exploration trail colour (config: brush_color, hex RGB)
 float g_brushG  = 0.067f;
 float g_brushB  = 0.067f;
+BYTE  g_cursorR = 0, g_cursorG = 0, g_cursorB = 0;  // marker tint (config: cursor_color)
+bool  g_cursorTint = false;
 
 // Exploration canvas — D2D is single-threaded; all canvas access must be on the UI thread.
 ID2D1BitmapRenderTarget*               explorationCanvas = nullptr;
@@ -93,6 +109,7 @@ void             ReadMemoryOfExanima();
 thread*          ptr_t_ReadMemoryOfExanima;
 void             HideWindowBorders(HWND);
 ID2D1Bitmap*     lbmpfromFile(const wchar_t*);
+ID2D1Bitmap*     lbmpTintedFromFile(const wchar_t*, BYTE, BYTE, BYTE);
 void             UpdateWindowProp();
 void             LoadAddressesFromConfig();
 void             CreateExplorationCanvas(BYTE level);
@@ -116,6 +133,10 @@ void LoadAddressesFromConfig() {
     ADDR_X_POS   = readPtr(L"offset_x_ptr");
     ADDR_Y_POS   = readPtr(L"offset_y_ptr");
     ADDR_MAP_LVL = readPtr(L"offset_lvl_ptr");
+    ADDR_ROT_X  = readPtr(L"rotationx_ptr");
+    ADDR_ROT_Y  = readPtr(L"rotationy_ptr");
+    g_camRotOn  = (ADDR_ROT_X != nullptr && ADDR_ROT_Y != nullptr);
+    g_rotateMap = GetPrivateProfileIntW(L"AppSettings", L"rotate_map", 0, ini) != 0;
     brushRadius   = (float)GetPrivateProfileIntW(L"AppSettings", L"brush_radius", 2, ini);
     g_opacity     = (BYTE)(GetPrivateProfileIntW(L"AppSettings", L"opacity", 60, ini) * 255 / 100);
     g_brushPaused = GetPrivateProfileIntW(L"AppSettings", L"brush_enabled", 1, ini) == 0;
@@ -127,6 +148,16 @@ void LoadAddressesFromConfig() {
     g_brushR = ((rgb >> 16) & 0xFF) / 255.f;
     g_brushG = ((rgb >>  8) & 0xFF) / 255.f;
     g_brushB = ((rgb >>  0) & 0xFF) / 255.f;
+
+    wchar_t cursorBuf[16] = {};
+    GetPrivateProfileStringW(L"AppSettings", L"cursor_color", L"default", cursorBuf, 16, ini);
+    g_cursorTint = (cursorBuf[0] != 0 && lstrcmpiW(cursorBuf, L"default") != 0);
+    if (g_cursorTint) {
+        unsigned long crgb = wcstoul(cursorBuf, nullptr, 16);
+        g_cursorR = (BYTE)((crgb >> 16) & 0xFF);
+        g_cursorG = (BYTE)((crgb >>  8) & 0xFF);
+        g_cursorB = (BYTE)((crgb >>  0) & 0xFF);
+    }
 
     ClearMapCache();
 }
@@ -290,7 +321,13 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
         D2D1::HwndRenderTargetProperties(hWnd, D2D1::SizeU(winSizeWidth, winSizeHeight)),
         &renderTarget);
 
-    bmp_PosFig = lbmpfromFile(L"assets\\PosFig.png");
+    bmp_PosFig = g_cursorTint
+        ? lbmpTintedFromFile(L"assets\\playericon.png", g_cursorR, g_cursorG, g_cursorB)
+        : lbmpfromFile(L"assets\\playericon.png");
+    if (bmp_PosFig) {
+        D2D1_SIZE_F msz = bmp_PosFig->GetSize();
+        if (msz.height > 0.f) g_markerAspect = msz.width / msz.height;
+    }
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
     SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
@@ -312,13 +349,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 float ay = g_miniMap ? 75.f : 140.f;
                 Map_rec[0]    = x_pos * scale + ax;
                 Map_rec[1]    = y_pos * scale + ay;
-                PosFig_rec[0] = ax - 10;
-                PosFig_rec[1] = ay - 45;
+                PosFig_rec[0] = ax;
+                PosFig_rec[1] = ay;
             } else if (mapState & FULLMAP) {
                 // In full-screen mode Map_rec is panned by mouse drag;
                 // the player indicator follows accordingly.
-                PosFig_rec[0] = Map_rec[0] - x_pos * scale - 10;
-                PosFig_rec[1] = Map_rec[1] - y_pos * scale - 40;
+                PosFig_rec[0] = Map_rec[0] - x_pos * scale;
+                PosFig_rec[1] = Map_rec[1] - y_pos * scale;
             }
         }
         InvalidateRect(hWnd, nullptr, FALSE);
@@ -433,6 +470,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             renderTarget->BeginDraw();
             renderTarget->Clear();
 
+            D2D1_POINT_2F pivot = D2D1::Point2F(PosFig_rec[0], PosFig_rec[1]);
+            bool mapRot = g_rotateMap && g_camRotOn && (mapState & CORNERMAP);
+            renderTarget->SetTransform(mapRot
+                ? D2D1::Matrix3x2F::Rotation(g_mapAngle, pivot)
+                : D2D1::Matrix3x2F::Identity());
+
             if (bmp_Map)
                 renderTarget->DrawBitmap(bmp_Map,
                     D2D1::RectF(Map_rec[0], Map_rec[1],
@@ -451,12 +494,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
             }
 
-            renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
-
-            if (bmp_PosFig)
+            if (bmp_PosFig) {
+                float mz = sqrtf(scale);
+                if (mz < 0.6f) mz = 0.6f; else if (mz > 1.6f) mz = 1.6f;
+                if (mapState & FULLMAP) mz *= kMarkerFullMul;
+                float hh = kMarkerH * mz * 0.5f;
+                float hw = hh * g_markerAspect;
+                bool markerRot = g_camRotOn && !mapRot;
+                renderTarget->SetTransform(markerRot
+                    ? D2D1::Matrix3x2F::Rotation(g_markerAngle, pivot)
+                    : D2D1::Matrix3x2F::Identity());
                 renderTarget->DrawBitmap(bmp_PosFig,
-                    D2D1::RectF(PosFig_rec[0], PosFig_rec[1],
-                                PosFig_rec[0] + 20, PosFig_rec[1] + 51));
+                    D2D1::RectF(pivot.x - hw, pivot.y - hh, pivot.x + hw, pivot.y + hh));
+                renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
+            }
 
             renderTarget->EndDraw();
         }
@@ -593,6 +644,20 @@ void ReadMemoryOfExanima() {
             x_pos = (rawX - originX) * -scale_;
             y_pos = (rawY - originY) * -scale_;
 
+            constexpr float kRad2Deg = 180.f / 3.14159265358979f;
+            // Camera facing (2D vector, N=(0,1), E=(1,0)). The marker points along it
+            // (+atan2, verified for 0.9.5g); the map turns the other way to bring that
+            // facing to "up" (negated), used only in rotate_map mode.
+            if (ADDR_ROT_X && ADDR_ROT_Y) {
+                float cx = 0.f, cy = 0.f;
+                if (ReadProcessMemory(hProcHandle, ADDR_ROT_X, &cx, sizeof(cx), 0) &&
+                    ReadProcessMemory(hProcHandle, ADDR_ROT_Y, &cy, sizeof(cy), 0)) {
+                    float a = atan2f(cx, cy) * kRad2Deg;
+                    g_markerAngle =  a;
+                    g_mapAngle    = -a;
+                }
+            }
+
             // Post a paint stroke when the player moves at least 1 world unit.
             // Skip if the delta is huge (>500 units) — indicates a menu transition
             // where X/Y snap to 0,0 while the level ID hasn't updated yet.
@@ -643,6 +708,52 @@ cleanup:
     if (wicDecoder)   wicDecoder->Release();
     if (wicConverter) wicConverter->Release();
     if (wicFrame)     wicFrame->Release();
+    return bmp;
+}
+
+// Like lbmpfromFile, but recolours a solid (alpha-shaped) PNG to an RGB tint — used
+// for the player marker so cursor_color works like brush_color. The PNG's own colour
+// is discarded; each pixel's alpha is kept and premultiplied with the tint.
+ID2D1Bitmap* lbmpTintedFromFile(const wchar_t* file, BYTE cr, BYTE cg, BYTE cb) {
+    IWICBitmapDecoder*     dec  = nullptr;
+    IWICFormatConverter*   conv = nullptr;
+    IWICBitmapFrameDecode* frm  = nullptr;
+    ID2D1Bitmap*           bmp  = nullptr;
+
+    if (FAILED(wicFactory->CreateDecoderFromFilename(
+            file, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &dec)))
+        return nullptr;
+
+    if (FAILED(dec->GetFrame(0, &frm)))                    goto cleanup;
+    if (FAILED(wicFactory->CreateFormatConverter(&conv)))  goto cleanup;
+    if (FAILED(conv->Initialize(frm, GUID_WICPixelFormat32bppPBGRA,
+                       WICBitmapDitherTypeNone, nullptr, 0.0,
+                       WICBitmapPaletteTypeCustom)))        goto cleanup;
+    {
+        UINT w = 0, h = 0;
+        conv->GetSize(&w, &h);
+        UINT stride = w * 4;
+        std::vector<BYTE> px((size_t)stride * h);
+        if (FAILED(conv->CopyPixels(nullptr, stride, (UINT)px.size(), px.data()))) goto cleanup;
+        // 32bppPBGRA = premultiplied B,G,R,A. Replace the colour with the tint, scaled
+        // by alpha to not fuck the anti aliased edges and make it blocky as hell.
+        for (size_t i = 0; i + 3 < px.size(); i += 4) {
+            BYTE a = px[i + 3];
+            px[i + 0] = (BYTE)(cb * a / 255);
+            px[i + 1] = (BYTE)(cg * a / 255);
+            px[i + 2] = (BYTE)(cr * a / 255);
+        }
+        if (renderTarget) {
+            D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            renderTarget->CreateBitmap(D2D1::SizeU(w, h), px.data(), stride, bp, &bmp);
+        }
+    }
+
+cleanup:
+    if (dec)  dec->Release();
+    if (conv) conv->Release();
+    if (frm)  frm->Release();
     return bmp;
 }
 

@@ -13,9 +13,10 @@ Based on [MapExanimaC](https://github.com/staniBosch/MapExanimaC) by staniBosch,
 - Transparent overlay that sits on top of the game window
 - Paints an exploration trail as you move through each level
 - Trail is saved per level and restored on next launch (`routes/` folder)
-- Quick save/load backup of game saves (F5/F6)
+- Quick save/load backup of game saves (F5/F6) - will store backups in a folder 'backUP' next to your save files
 - Configurable brush size, colour, and window opacity
 - Corner minimap and fullscreen map modes
+- Option to move map to follow the direction your camera is aiming at
 
 ## Requirements
 
@@ -64,19 +65,47 @@ All settings live in `assets/config.ini`.
 | `brush_radius` | `2` | Trail brush size in pixels (`1` = hair-thin, `2` = fine, `5` = medium, `18` = thick) |
 | `brush_color` | `AA1111` | Trail colour as hex RGB (e.g. `AA1111` = dark red, `26E526` = green, `000000` = black) |
 | `opacity` | `60` | Map opacity, 0–100 |
+| `cursor_color` | `default` | Player icon colour as hex RGB, default is the metallic Exanima menu cursor.
+| `rotate_map` | `0` | Whether the map is static or rotates to view centering on where the player camera is looking.
 
 ### Memory addresses
 
-The overlay reads your position from Exanima's memory. The addresses are stored in `[MemoryAddresses]` and are calibrated for a specific game version. **After a game update these may stop working** — the player dot will freeze but the overlay will still open. Updated addresses will need to be found with a tool like Cheat Engine and written into `config.ini`.
+The overlay reads your position from Exanima's memory. The addresses/offsets are stored in `[MemoryAddresses]` and are calibrated for a specific game version. **After a game update these may stop working** — the player dot will freeze but the overlay will still open. Updated addresses will need to be found with a tool like Cheat Engine and written into `config.ini`.
 
 ```ini
 [MemoryAddresses]
 offset_x_ptr = 0x4DEDE0
 offset_y_ptr = 0x48BCB8
 offset_lvl_ptr = 0x2DA030
+rotationx_ptr = 0x489D80
+rotationy_ptr = 0x489CE0
 ```
 
 These are offsets relative to the `Exanima.exe` module base, not absolute addresses.
+
+Some tips that I can give if you aim to grab new memoryAddresses yourself:
+When you first load into Exanima - new character - for a moment as soon as your character spawns in, the X/Y will be very specific values:
+```
+X = 8200
+Y = 3920
+Both values reset to 0 as soon after you exit to main menu.
+offset_y_ptr will be exactly 8 bytes ahead off offset_x_ptr.
+```
+
+Find X and Y first, then go about 8000 bytes upwards from there
+
+For finding rotation, X = West and East, Y = North and South:
+```
+When you start a new character , the door is West.
+West = -1, East = 1
+North = 1, South = -1
+
+Looking NW will have
+X ~ -0.707
+Y ~ 0.707
+
+So go from there if you struggle to find it via memory viewer
+```
 
 ## Exploration trail
 
@@ -94,6 +123,8 @@ Delete a `.dat` file to reset that level's trail.
 ## Building & Releasing
 
 This repo includes a GitHub Actions workflow that automatically builds and publishes a release when you push a version tag.
+
+This is mostly if you want to update and build it yourself without faffing about with build tools; just fork the repo and away you go.
 
 **To publish a release via GitHub Actions**
 
