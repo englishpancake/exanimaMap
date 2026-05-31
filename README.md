@@ -43,12 +43,15 @@ Grab a release from releases - on your right side.
 | Input | Action |
 |---|---|
 | Left click + drag | Move the minimap window |
-| Double click | Toggle between corner minimap and fullscreen map |
+| Double click / M| Toggle between corner minimap and fullscreen map |
 | Right click | Toggle mini mode (150px / 300px) in corner mode |
 | Scroll wheel | Zoom in / out |
 | F5 | Quick backup game saves (prompts for confirmation) |
 | F6 | Load backup saves (prompts for confirmation) |
 | F8 | Pause / resume exploration trail drawing |
+| F9 | Close the map overlay |
+
+Keyboard shortcuts only fire when Exanima or the map overlay is the focused window.
 
 ## Configuration
 

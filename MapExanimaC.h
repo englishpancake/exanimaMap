@@ -5,6 +5,7 @@
 #define IDM_MY_MSG_UPDATE_UI  (WM_APP + 4)
 #define IDM_LEVEL_CHANGED     (WM_APP + 6)  // WPARAM=newLevel, LPARAM=oldLevel — bg thread → UI thread
 #define IDM_PAINT_VISIT       (WM_APP + 7)  // WPARAM=level<<32|worldXbits, LPARAM=worldYbits
+#define IDM_TOGGLE_FULLMAP    (WM_APP + 8)  // keyboard hook → UI thread: toggle corner/full map
 
 #define CORNERMAP  0x0010
 #define FULLMAP    0x0100

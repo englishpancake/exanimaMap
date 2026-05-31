@@ -98,6 +98,9 @@ float g_curScale   = 0.0786f;
 // Exanima.exe module base — resolved once on connect; config offsets are relative to this.
 uintptr_t g_exeBase = 0;
 
+// PID of the Exanima process — set by the memory thread, used by the keyboard hooks.
+std::atomic<DWORD> g_exanimaPid { 0 };
+
 HWND mainWindowH;
 
 // ── Forward declarations ───────────────────────────────────────────────────
@@ -423,6 +426,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_LBUTTONDBLCLK:
+    case IDM_TOGGLE_FULLMAP:
         if (mapState & CORNERMAP) {
             RECT rec;
             GetWindowRect(hWnd, &rec);
@@ -532,13 +536,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_ERASEBKGND:
         return 1;
 
-    case WM_CHAR:
-        if (wParam == VK_ESCAPE) {
-            b_readMemory = false;
-            DestroyWindow(hWnd);
-        }
-        break;
-
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }
@@ -569,6 +566,7 @@ void ReadMemoryOfExanima() {
     }
 
     GetWindowThreadProcessId(hWindow, &processID);
+    g_exanimaPid = processID;
     HANDLE hProcHandle = OpenProcess(
         PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, processID);
 
@@ -783,10 +781,25 @@ void UpdateWindowProp() {
 
 LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
     if (wParam == WM_KEYDOWN) {
+        HWND fg = GetForegroundWindow();
+        DWORD fgPid = 0;
+        GetWindowThreadProcessId(fg, &fgPid);
+        bool relevant = (fg == mainWindowH) || (fgPid != 0 && fgPid == g_exanimaPid.load());
+        if (!relevant)
+            return CallNextHookEx(0, code, wParam, lParam);
+
         KBDLLHOOKSTRUCT* s = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
         if (s->vkCode == VK_F8)
             g_brushPaused = !g_brushPaused;
+
+        if (s->vkCode == 'M')
+            PostMessage(mainWindowH, IDM_TOGGLE_FULLMAP, 0, 0);
+
+        if (s->vkCode == VK_F9) {
+            b_readMemory = false;
+            PostMessage(mainWindowH, WM_CLOSE, 0, 0);
+        }
 
         if (g_quickSave) {
 
