@@ -650,9 +650,15 @@ void ReadMemoryOfExanima() {
                 float cx = 0.f, cy = 0.f;
                 if (ReadProcessMemory(hProcHandle, ADDR_ROT_X, &cx, sizeof(cx), 0) &&
                     ReadProcessMemory(hProcHandle, ADDR_ROT_Y, &cy, sizeof(cy), 0)) {
-                    float a = atan2f(cx, cy) * kRad2Deg;
-                    g_markerAngle =  a;
-                    g_mapAngle    = -a;
+                    // Discard mid-update reads: a valid unit vector has magnitude ≈ 1.
+                    // If the two non-atomic reads straddle a game frame update (common
+                    // under Wine/Proton), the magnitude will be well off 1.0.
+                    float mag2 = cx * cx + cy * cy;
+                    if (mag2 >= 0.5f && mag2 <= 2.0f) {
+                        float a = atan2f(cx, cy) * kRad2Deg;
+                        g_markerAngle =  a;
+                        g_mapAngle    = -a;
+                    }
                 }
             }
 
