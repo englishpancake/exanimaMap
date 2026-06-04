@@ -77,11 +77,11 @@ The overlay reads your position from Exanima's memory. The addresses/offsets are
 
 ```ini
 [MemoryAddresses]
-offset_x_ptr = 0x4DEDE0
-offset_y_ptr = 0x48BCB8
-offset_lvl_ptr = 0x2DA030
-rotationx_ptr = 0x489D80
-rotationy_ptr = 0x489CE0
+offset_x_ptr = 0x48CCC0
+offset_y_ptr = 0x48CCC8
+offset_lvl_ptr = 0x2DB030
+rotationx_ptr = 0x48AD80
+rotationy_ptr = 0x48ACE0
 ```
 
 These are offsets relative to the `Exanima.exe` module base, not absolute addresses.
