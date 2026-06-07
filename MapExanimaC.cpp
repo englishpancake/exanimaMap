@@ -61,7 +61,8 @@ float             g_markerAngle = 0.f;      // marker rotation (rotate_map = 0, 
 std::atomic<bool> g_camRotOn    { false };  // camera rotation addresses resolved
 bool              g_rotateMap   = false;    // config: rotate_map — turn the map vs the marker
 
-// Runtime memory addresses — loaded from config.ini [MemoryAddresses] at startup.
+// Runtime memory addresses — auto-located by AOB scanning at startup
+// (AobResolvePositions / AobResolveLevel). Null until resolved.
 LPVOID ADDR_MAP_LVL = nullptr;
 LPVOID ADDR_X_POS   = nullptr;
 LPVOID ADDR_Y_POS   = nullptr;
@@ -114,7 +115,7 @@ void             HideWindowBorders(HWND);
 ID2D1Bitmap*     lbmpfromFile(const wchar_t*);
 ID2D1Bitmap*     lbmpTintedFromFile(const wchar_t*, BYTE, BYTE, BYTE);
 void             UpdateWindowProp();
-void             LoadAddressesFromConfig();
+void             LoadSettingsFromConfig();
 void             CreateExplorationCanvas(BYTE level);
 void             PaintVisit(float worldX, float worldY);
 void             SaveExploration(BYTE level);
@@ -123,22 +124,11 @@ LRESULT CALLBACK keyboard_hook(int, WPARAM, LPARAM);
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-void LoadAddressesFromConfig() {
+void LoadSettingsFromConfig() {
     const wchar_t* ini = ConfigPath();
-    // Config stores module-relative offsets (e.g. 0x48ACC8 = Exanima.exe+48ACC8).
-    // g_exeBase is added so the final address is correct regardless of ASLR.
-    auto readPtr = [&](const wchar_t* key) -> LPVOID {
-        wchar_t buf[32] = {};
-        GetPrivateProfileStringW(L"MemoryAddresses", key, L"0", buf, 32, ini);
-        uintptr_t offset = wcstoull(buf, nullptr, 16);
-        return offset ? (LPVOID)(g_exeBase + offset) : nullptr;
-    };
-    ADDR_X_POS   = readPtr(L"offset_x_ptr");
-    ADDR_Y_POS   = readPtr(L"offset_y_ptr");
-    ADDR_MAP_LVL = readPtr(L"offset_lvl_ptr");
-    ADDR_ROT_X  = readPtr(L"rotationx_ptr");
-    ADDR_ROT_Y  = readPtr(L"rotationy_ptr");
-    g_camRotOn  = (ADDR_ROT_X != nullptr && ADDR_ROT_Y != nullptr);
+    // Memory addresses are no longer configured — they are auto-located at
+    // startup by AOB scanning (AobResolvePositions / AobResolveLevel). This
+    // function now only loads the visual/behaviour settings below.
     g_rotateMap = GetPrivateProfileIntW(L"AppSettings", L"rotate_map", 0, ini) != 0;
     brushRadius   = (float)GetPrivateProfileIntW(L"AppSettings", L"brush_radius", 2, ini);
     g_opacity     = (BYTE)(GetPrivateProfileIntW(L"AppSettings", L"opacity", 60, ini) * 255 / 100);
@@ -163,6 +153,104 @@ void LoadAddressesFromConfig() {
     }
 
     ClearMapCache();
+}
+
+// ── AOB scanning ──────────────────────────────────────────────────────────
+// The player X/Y position floats are at static module offsets that shift on
+// every game update (forcing users to re-edit config.ini). Instead of trusting
+// the config value, we locate them by scanning the executable for the stable
+// instruction that writes the position — the opcodes survive updates even when
+// the data address moves.
+
+static uintptr_t AobScan(HANDLE proc, uintptr_t base,
+                         const unsigned char* pat, const char* mask, size_t len) {
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t addr = base, found = 0;
+    std::vector<unsigned char> buf;
+    while (!found && VirtualQueryEx(proc, (LPCVOID)addr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_IMAGE &&
+            (uintptr_t)mbi.AllocationBase == base &&
+            (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+            buf.resize(mbi.RegionSize);
+            SIZE_T n = 0;
+            if (ReadProcessMemory(proc, mbi.BaseAddress, buf.data(), mbi.RegionSize, &n)) {
+                for (size_t i = 0; i + len <= n; i++) {
+                    size_t j = 0;
+                    while (j < len && (mask[j] == '?' || buf[i + j] == pat[j])) j++;
+                    if (j == len) { found = (uintptr_t)mbi.BaseAddress + i; break; }
+                }
+            }
+        }
+        uintptr_t next = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        if (next <= addr) break;
+        addr = next;
+    }
+    return found;
+}
+
+// Read the RIP-relative target of an instruction found by AOB.
+//   sigAt      = address the signature matched
+//   instrOff   = offset of the target instruction within the signature
+//   instrLen   = full length of that instruction
+//   dispOff    = offset of the rel32 displacement within the instruction
+// Returns the absolute target address, or 0 on read failure.
+static uintptr_t RipTarget(HANDLE proc, uintptr_t sigAt,
+                           size_t instrOff, size_t instrLen, size_t dispOff) {
+    uintptr_t instr = sigAt + instrOff;
+    int32_t disp = 0; SIZE_T n = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)(instr + dispOff), &disp, 4, &n) || n != 4)
+        return 0;
+    return instr + instrLen + (intptr_t)disp;
+}
+
+// Rotation X/Y are not referenced by their own instructions (rotation is only
+// ever passed by address via lea). They sit at fixed deltas before player X in
+// the same data section — relationships that survive section shifts.
+#define ROT_X_FROM_X  0x1F40
+#define ROT_Y_FROM_X  0x1FE0
+
+// Locate the player X/Y floats via the position-mirror write:
+//   48 8B 90 A0 0A 00 00   mov rdx,[rax+0xAA0]   (reads body position)
+//   48 89 15 ?? ?? ?? ??   mov [rip+disp],rdx    (disp -> player X float)
+// Y is the adjacent float at X+8; rotation is derived from X.
+static bool AobResolvePositions(HANDLE proc) {
+    if (!g_exeBase) return false;
+    const unsigned char pat[] = { 0x48,0x8B,0x90,0xA0,0x0A,0x00,0x00,
+                                  0x48,0x89,0x15,0,0,0,0 };
+    const char mask[] = "xxxxxxxxxx????";
+    uintptr_t at = AobScan(proc, g_exeBase, pat, mask, sizeof(pat));
+    if (!at) return false;
+
+    // the position-mirror write (48 89 15 …) is 7 bytes into the signature,
+    // is 7 bytes long, with its rel32 at offset 3.
+    uintptr_t xAddr = RipTarget(proc, at, 7, 7, 3);
+    if (!xAddr) return false;
+
+    ADDR_X_POS = (LPVOID)xAddr;
+    ADDR_Y_POS = (LPVOID)(xAddr + 8);
+    ADDR_ROT_X = (LPVOID)(xAddr - ROT_X_FROM_X);
+    ADDR_ROT_Y = (LPVOID)(xAddr - ROT_Y_FROM_X);
+    g_camRotOn = true;
+    return true;
+}
+
+// Locate the level byte via a unique read site:
+//   8B 05 ?? ?? ?? ??   mov eax,[rip+disp]   (disp -> level value)
+//   89 43 5C            mov [rbx+0x5C],eax   (these opcodes make it unique)
+//   48 8D 4C            lea rcx,[...]
+static bool AobResolveLevel(HANDLE proc) {
+    if (!g_exeBase) return false;
+    const unsigned char pat[] = { 0x8B,0x05,0,0,0,0, 0x89,0x43,0x5C, 0x48,0x8D,0x4C };
+    const char mask[] = "xx????xxxxxx";
+    uintptr_t at = AobScan(proc, g_exeBase, pat, mask, sizeof(pat));
+    if (!at) return false;
+
+    // the mov eax,[rip+disp] is at the start, 6 bytes long, rel32 at offset 2.
+    uintptr_t lvl = RipTarget(proc, at, 0, 6, 2);
+    if (!lvl) return false;
+    ADDR_MAP_LVL = (LPVOID)lvl;
+    return true;
 }
 
 // ── Exploration canvas ────────────────────────────────────────────────────
@@ -272,7 +360,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDS_APP_TITLE,   szTitle,       MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_MAPEXANIMAC, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
-    LoadAddressesFromConfig();
+    LoadSettingsFromConfig();
     CreateDirectoryW(SavesDir(), nullptr);
 
     if (!InitInstance(hInstance, nCmdShow)) return FALSE;
@@ -585,7 +673,9 @@ void ReadMemoryOfExanima() {
                 }
             }
         }
-        LoadAddressesFromConfig();
+        LoadSettingsFromConfig();
+        AobResolvePositions(hProcHandle);
+        AobResolveLevel(hProcHandle);
     }
 
     HMONITOR monitor = MonitorFromWindow(hWindow, MONITOR_DEFAULTTONEAREST);

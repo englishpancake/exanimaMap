@@ -71,44 +71,28 @@ All settings live in `assets/config.ini`.
 | `cursor_color` | `default` | Player icon colour as hex RGB, default is the metallic Exanima menu cursor.
 | `rotate_map` | `0` | Whether the map is static or rotates to view centering on where the player camera is looking.
 
-### Memory addresses
+### Memory addresses (auto-located)
 
-The overlay reads your position from Exanima's memory. The addresses/offsets are stored in `[MemoryAddresses]` and are calibrated for a specific game version. **After a game update these may stop working** — the player dot will freeze but the overlay will still open. Updated addresses will need to be found with a tool like Cheat Engine and written into `config.ini`.
+Idea suggested by Yew who provided an example - https://github.com/ALEHACKsp/memory
 
-```ini
-[MemoryAddresses]
-offset_x_ptr = 0x48CCC0
-offset_y_ptr = 0x48CCC8
-offset_lvl_ptr = 0x2DB030
-rotationx_ptr = 0x48AD80
-rotationy_ptr = 0x48ACE0
-```
+The overlay reads your position, level and camera rotation from Exanima's memory.
+**You no longer configure these** — they are located automatically at startup by
+**AOB (array-of-bytes) scanning**, so the overlay keeps working across game
+updates without any manual address-finding. There is no `[MemoryAddresses]`
+section in `config.ini` anymore.
 
-These are offsets relative to the `Exanima.exe` module base, not absolute addresses.
+How it works: instead of hardcoding the data addresses (which shift on every game
+update — the recurring cause of "the player dot froze"), the overlay scans
+`Exanima.exe` for the stable **instructions** that reference those values and
+reads the address out of the instruction at runtime. Code patterns survive
+updates even when the data moves, so the mod shouldn't break every update.
 
-Some tips that I can give if you aim to grab new memoryAddresses yourself:
-When you first load into Exanima - new character - for a moment as soon as your character spawns in, the X/Y will be very specific values:
-```
-X = 8200
-Y = 3920
-Both values reset to 0 as soon after you exit to main menu.
-offset_y_ptr will be exactly 8 bytes ahead off offset_x_ptr.
-```
-
-Find X and Y first, then go about 8000 bytes upwards from there
-
-For finding rotation, X = West and East, Y = North and South:
-```
-When you start a new character , the door is West.
-West = -1, East = 1
-North = 1, South = -1
-
-Looking NW will have
-X ~ -0.707
-Y ~ 0.707
-
-So go from there if you struggle to find it via memory viewer
-```
+- **Player X / Y** — found via the instruction that writes the position
+  (`mov rdx,[rax+0xAA0]; mov [X],rdx`). Y is the float 8 bytes after X.
+- **Level** — found via a unique level-read instruction.
+- **Camera rotation X / Y** — derived from the player-X address by a fixed
+  in-section delta (`rotY = X − 0x1FE0`, `rotX = X − 0x1F40`), a relationship that
+  survives the section shifts that come every game update.
 
 ## Exploration trail
 
