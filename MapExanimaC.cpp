@@ -211,12 +211,12 @@ static uintptr_t RipTarget(HANDLE proc, uintptr_t sigAt,
 #define ROT_Y_FROM_X  0x1FE0
 
 // Locate the player X/Y floats via the position-mirror write:
-//   48 8B 90 A0 0A 00 00   mov rdx,[rax+0xAA0]   (reads body position)
+//   48 8B 90 A4 0A 00 00   mov rdx,[rax+0xAA4]   (reads body position)
 //   48 89 15 ?? ?? ?? ??   mov [rip+disp],rdx    (disp -> player X float)
 // Y is the adjacent float at X+8; rotation is derived from X.
 static bool AobResolvePositions(HANDLE proc) {
     if (!g_exeBase) return false;
-    const unsigned char pat[] = { 0x48,0x8B,0x90,0xA0,0x0A,0x00,0x00,
+    const unsigned char pat[] = { 0x48,0x8B,0x90,0xA4,0x0A,0x00,0x00,
                                   0x48,0x89,0x15,0,0,0,0 };
     const char mask[] = "xxxxxxxxxx????";
     uintptr_t at = AobScan(proc, g_exeBase, pat, mask, sizeof(pat));
