@@ -910,6 +910,7 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
                         if (pValue) { dir = wstring(pValue) + L"\\Exanima"; free(pValue); }
                     }
                     wstring backup = dir + L"\\backUP";
+                    if (mapLVL > 1) SaveExploration(mapLVL);
                     try {
                         if (!filesystem::exists(dir)) {
                             MessageBoxW(nullptr,
@@ -923,6 +924,17 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
                                     filesystem::copy_file(entry.path(),
                                         backup + L"\\" + entry.path().filename().wstring(),
                                         filesystem::copy_options::overwrite_existing);
+                            }
+                            wstring routesDir = SavesDir();
+                            if (filesystem::exists(routesDir)) {
+                                wstring routesBackup = backup + L"\\routes";
+                                filesystem::create_directories(routesBackup);
+                                for (auto& entry : filesystem::directory_iterator(routesDir)) {
+                                    if (entry.path().extension() == L".dat")
+                                        filesystem::copy_file(entry.path(),
+                                            routesBackup + L"\\" + entry.path().filename().wstring(),
+                                            filesystem::copy_options::overwrite_existing);
+                                }
                             }
                             MessageBoxW(nullptr, L"Backup created.",
                                         L"Exanima Backup", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
@@ -961,6 +973,23 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
                                     filesystem::copy_file(entry.path(),
                                         dir + L"\\" + entry.path().filename().wstring(),
                                         filesystem::copy_options::overwrite_existing);
+                            }
+                            wstring routesBackup = backup + L"\\routes";
+                            if (filesystem::exists(routesBackup)) {
+                                wstring routesDir = SavesDir();
+                                filesystem::create_directories(routesDir);
+                                for (auto& entry : filesystem::directory_iterator(routesBackup)) {
+                                    if (entry.path().extension() == L".dat")
+                                        filesystem::copy_file(entry.path(),
+                                            routesDir + L"\\" + entry.path().filename().wstring(),
+                                            filesystem::copy_options::overwrite_existing);
+                                }
+                                if (mapLVL > 1) {
+                                    explorationPoints.erase((BYTE)mapLVL);
+                                    g_visitedCells.clear();
+                                    CreateExplorationCanvas(mapLVL);
+                                    LoadExploration(mapLVL);
+                                }
                             }
                             MessageBoxW(nullptr, L"Backup loaded.",
                                         L"Exanima Backup", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
