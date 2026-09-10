@@ -5,6 +5,7 @@
 #pragma comment(lib, "windowscodecs.lib")
 
 const wchar_t* ConfigPath();
+std::wstring AssetPath(const wchar_t* path);
 const wchar_t* SavesDir();
 const wchar_t* getMap(BYTE level);
 int            getMapOffsetX(BYTE level);

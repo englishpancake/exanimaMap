@@ -101,6 +101,34 @@ uintptr_t g_exeBase = 0;
 
 // PID of the Exanima process — set by the memory thread, used by the keyboard hooks.
 std::atomic<DWORD> g_exanimaPid { 0 };
+std::atomic<HWND> g_gameWindow { nullptr };
+bool g_lockCursor = true;
+bool g_cursorClipped = false; // UI thread owns cursor confinement.
+
+void ReleaseGameCursor() {
+    if (g_cursorClipped) {
+        ClipCursor(nullptr);
+        g_cursorClipped = false;
+    }
+}
+
+void UpdateGameCursor() {
+    HWND game = g_gameWindow.load();
+    RECT rect{};
+    if (!g_lockCursor || !game || GetForegroundWindow() != game ||
+        !IsWindowVisible(game) || IsIconic(game) || !GetClientRect(game, &rect)) {
+        ReleaseGameCursor();
+        return;
+    }
+    POINT topLeft{ rect.left, rect.top }, bottomRight{ rect.right, rect.bottom };
+    if (!ClientToScreen(game, &topLeft) || !ClientToScreen(game, &bottomRight) ||
+        bottomRight.x <= topLeft.x || bottomRight.y <= topLeft.y) {
+        ReleaseGameCursor();
+        return;
+    }
+    rect = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+    if (ClipCursor(&rect)) g_cursorClipped = true;
+}
 
 HWND mainWindowH;
 
@@ -130,6 +158,7 @@ void LoadSettingsFromConfig() {
     // startup by AOB scanning (AobResolvePositions / AobResolveLevel). This
     // function now only loads the visual/behaviour settings below.
     g_rotateMap = GetPrivateProfileIntW(L"AppSettings", L"rotate_map", 0, ini) != 0;
+    g_lockCursor = GetPrivateProfileIntW(L"AppSettings", L"lock_cursor", 1, ini) != 0;
     brushRadius   = (float)GetPrivateProfileIntW(L"AppSettings", L"brush_radius", 2, ini);
     g_opacity     = (BYTE)(GetPrivateProfileIntW(L"AppSettings", L"opacity", 60, ini) * 255 / 100);
     g_brushPaused = GetPrivateProfileIntW(L"AppSettings", L"brush_enabled", 1, ini) == 0;
@@ -491,6 +520,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             GetWindowLong(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED);
         SetLayeredWindowAttributes(hWnd, 0, g_opacity, LWA_ALPHA);
         SetTimer(hWnd, 1, 30000, nullptr);
+        SetTimer(hWnd, 2, 50, nullptr);
         break;
 
     case WM_LBUTTONDOWN:
@@ -608,11 +638,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_TIMER:
-        if (mapLVL > 1) SaveExploration(mapLVL);
+        if (wParam == 1 && mapLVL > 1) SaveExploration(mapLVL);
+        if (wParam == 2) UpdateGameCursor();
         break;
 
     case WM_DESTROY:
         KillTimer(hWnd, 1);
+        KillTimer(hWnd, 2);
+        ReleaseGameCursor();
         b_readMemory = false;
         if (mapLVL > 1) SaveExploration(mapLVL);
         if (bmp_Map)          { bmp_Map->Release();          bmp_Map          = nullptr; }
@@ -655,6 +688,7 @@ void ReadMemoryOfExanima() {
 
     GetWindowThreadProcessId(hWindow, &processID);
     g_exanimaPid = processID;
+    g_gameWindow = hWindow;
     HANDLE hProcHandle = OpenProcess(
         PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, processID);
 
@@ -673,7 +707,6 @@ void ReadMemoryOfExanima() {
                 }
             }
         }
-        LoadSettingsFromConfig();
         AobResolvePositions(hProcHandle);
         AobResolveLevel(hProcHandle);
     }
@@ -687,10 +720,10 @@ void ReadMemoryOfExanima() {
     if (isToFullscreen()) {
         HideWindowBorders(hWindow);
         SetWindowPos(hWindow, HWND_NOTOPMOST,
-                     info.rcMonitor.left, 0, monitor_width, monitor_height,
+                     info.rcMonitor.left, info.rcMonitor.top, monitor_width, monitor_height,
                      SWP_NOSENDCHANGING);
         SetWindowPos(mainWindowH, HWND_TOPMOST,
-                     info.rcMonitor.left, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                     info.rcMonitor.left, info.rcMonitor.top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
         SendMessage(hWindow, WM_EXITSIZEMOVE, 0, 0);
     }
 
@@ -781,13 +814,14 @@ void HideWindowBorders(HWND hw) {
 }
 
 ID2D1Bitmap* lbmpfromFile(const wchar_t* file) {
+    const wstring asset = AssetPath(file);
     ID2D1Bitmap*           bmp          = nullptr;
     IWICBitmapDecoder*     wicDecoder   = nullptr;
     IWICFormatConverter*   wicConverter = nullptr;
     IWICBitmapFrameDecode* wicFrame     = nullptr;
 
     if (FAILED(wicFactory->CreateDecoderFromFilename(
-            file, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &wicDecoder)))
+            asset.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &wicDecoder)))
         return nullptr;
 
     if (FAILED(wicDecoder->GetFrame(0, &wicFrame)))               goto cleanup;
@@ -809,13 +843,14 @@ cleanup:
 // for the player marker so cursor_color works like brush_color. The PNG's own colour
 // is discarded; each pixel's alpha is kept and premultiplied with the tint.
 ID2D1Bitmap* lbmpTintedFromFile(const wchar_t* file, BYTE cr, BYTE cg, BYTE cb) {
+    const wstring asset = AssetPath(file);
     IWICBitmapDecoder*     dec  = nullptr;
     IWICFormatConverter*   conv = nullptr;
     IWICBitmapFrameDecode* frm  = nullptr;
     ID2D1Bitmap*           bmp  = nullptr;
 
     if (FAILED(wicFactory->CreateDecoderFromFilename(
-            file, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &dec)))
+            asset.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &dec)))
         return nullptr;
 
     if (FAILED(dec->GetFrame(0, &frm)))                    goto cleanup;
@@ -863,12 +898,18 @@ void UpdateWindowProp() {
         Map_rec[0] = Map_rec[1] = 0;
         PosFig_rec[0] = 140; PosFig_rec[1] = 100;
     } else {
-        winSizeWidth  = monitor_width;
-        winSizeHeight = monitor_height;
-        SetWindowPos(mainWindowH, nullptr, 0, 0,
+        MONITORINFO currentMonitor{ sizeof(MONITORINFO) };
+        HWND game = g_gameWindow.load();
+        GetMonitorInfo(MonitorFromWindow(game ? game : mainWindowH,
+            MONITOR_DEFAULTTONEAREST), &currentMonitor);
+        winSizeWidth  = currentMonitor.rcMonitor.right - currentMonitor.rcMonitor.left;
+        winSizeHeight = currentMonitor.rcMonitor.bottom - currentMonitor.rcMonitor.top;
+        SetWindowPos(mainWindowH, nullptr, currentMonitor.rcMonitor.left, currentMonitor.rcMonitor.top,
                      winSizeWidth, winSizeHeight, SWP_NOZORDER | SWP_NOACTIVATE);
-        Map_rec[0] = (x_pos - windowPos[0] + winSizeWidth  / 2) * scale;
-        Map_rec[1] = (y_pos - windowPos[1] + winSizeHeight / 2) * scale;
+        Map_rec[0] = x_pos * scale + winSizeWidth / 2.f;
+        Map_rec[1] = y_pos * scale + winSizeHeight / 2.f;
+        PosFig_rec[0] = winSizeWidth / 2.f;
+        PosFig_rec[1] = winSizeHeight / 2.f;
     }
     renderTarget->Resize(D2D1::SizeU(winSizeWidth, winSizeHeight));
 }
@@ -876,6 +917,7 @@ void UpdateWindowProp() {
 // ── Keyboard hook ─────────────────────────────────────────────────────────
 
 LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
+    if (code < 0) return CallNextHookEx(0, code, wParam, lParam);
     if (wParam == WM_KEYDOWN) {
         HWND fg = GetForegroundWindow();
         DWORD fgPid = 0;
@@ -900,6 +942,7 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
         if (g_quickSave) {
 
             if (s->vkCode == VK_F5) {
+                ReleaseGameCursor();
                 if (MessageBox(nullptr,
                         L"Quick Backup? (Please pause or go to the menu first.)",
                         L"Confirm", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) == IDYES) {
@@ -948,6 +991,7 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wParam, LPARAM lParam) {
             }
 
             if (s->vkCode == VK_F6) {
+                ReleaseGameCursor();
                 if (MessageBox(nullptr,
                         L"Load Backup? (This will overwrite your current saves.)",
                         L"Confirm", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) == IDYES) {

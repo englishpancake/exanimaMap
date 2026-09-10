@@ -11,6 +11,7 @@ Based on [MapExanimaC](https://github.com/staniBosch/MapExanimaC) by staniBosch,
 ## Features
 
 - Transparent overlay that sits on top of the game window
+- Keeps the mouse inside the focused game window to prevent accidental clicks on other monitors (configurable; Alt-Tab releases it)
 - Paints an exploration trail as you move through each level
 - Trail is saved per level and restored on next launch (`routes/` folder)
 - Quick save/load backup of game saves (F5/F6) - will store backups in a folder 'backUP' next to your save files
@@ -62,6 +63,7 @@ All settings live in `assets/config.ini`.
 | Key | Default | Description |
 |---|---|---|
 | `full_window_screen` | `1` | Stretch Exanima to fill the monitor on launch |
+| `lock_cursor` | `1` | Confine the mouse to Exanima's client area while the game is focused. Releases when switching away, opening backup/restore dialogs, or closing the overlay. Set to `0` to disable |
 | `pathToExanimaSaves` | *(auto)* | Path to your Exanima saves folder. Defaults to `%APPDATA%\Exanima` if not set |
 | `quickSave` | `1` | Enable F5/F6 backup shortcuts |
 | `brush_enabled` | `1` | Whether the exploration trail starts enabled (`0` = paused at launch) |

@@ -1,5 +1,6 @@
 #include "LoadPNG.h"
 #include <windows.h>
+#include <filesystem>
 
 static wchar_t szMapBuffer[128];
 
@@ -11,6 +12,11 @@ static const wchar_t* ExeDir() {
     wchar_t* last = wcsrchr(dir, L'\\');
     if (last) *(last + 1) = L'\0';
     return dir;
+}
+
+std::wstring AssetPath(const wchar_t* path) {
+    if (!path || !*path) return {};
+    return (std::filesystem::path(ExeDir()) / path).wstring();
 }
 
 const wchar_t* ConfigPath() {
