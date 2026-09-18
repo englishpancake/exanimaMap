@@ -811,7 +811,7 @@ void ReadMemoryOfExanima() {
                     // read only so this check covers all three floats.
                     float mag2 = cx * cx + cy * cy + cz * cz;
                     if (mag2 >= 0.9f && mag2 <= 1.1f) {
-                        float a = atan2f(cx, cy) * kRad2Deg;
+                        float a = atan2f(cx, cy) * kRad2Deg - 90.f;
                         g_markerAngle =  a;
                         g_mapAngle    = -a;
                     }
