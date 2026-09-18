@@ -68,6 +68,7 @@ LPVOID ADDR_X_POS   = nullptr;
 LPVOID ADDR_Y_POS   = nullptr;
 LPVOID ADDR_ROT_X   = nullptr;
 LPVOID ADDR_ROT_Y   = nullptr;
+LPVOID ADDR_ROT_Z   = nullptr;
 
 // Direct2D objects
 ID2D1Bitmap*           bmp_Map      = nullptr;
@@ -236,30 +237,59 @@ static uintptr_t RipTarget(HANDLE proc, uintptr_t sigAt,
 // Rotation X/Y are not referenced by their own instructions (rotation is only
 // ever passed by address via lea). They sit at fixed deltas before player X in
 // the same data section — relationships that survive section shifts.
-#define ROT_X_FROM_X  0x1F40
-#define ROT_Y_FROM_X  0x1FE0
+// 2026-09-19: re-derived after the 0.9.5.x update moved the player struct
+// (position field 0xAA4 -> 0xC44) and broke the old 0x1F40/0x1FE0 rotation
+// deltas (those pointed at an unrelated, now-stale .bss slot — with no code
+// reference to re-locate by, a tedious live memory scan was the only way).
+// A live scan around the new ADDR_X_POS turned up three consecutive floats
+// immediately before it whose combined magnitude held at 1.0000 (zero
+// variance across ~140 samples, idle and moving) — a forward-facing unit
+// vector living right before position in the same entity struct. The middle
+// float stays near-constant (vertical/pitch component); the outer two swing
+// through the full ±1 range together and are the horizontal facing used here.
+#define ROT_X_FROM_X  0x10
+#define ROT_Y_FROM_X  0x18
+#define ROT_Z_FROM_X  0x14
 
-// Locate the player X/Y floats via the position-mirror write:
-//   48 8B 90 A4 0A 00 00   mov rdx,[rax+0xAA4]   (reads body position)
-//   48 89 15 ?? ?? ?? ??   mov [rip+disp],rdx    (disp -> player X float)
-// Y is the adjacent float at X+8; rotation is derived from X.
+// Locate the player X/Y floats via the position-mirror write. The mirror is
+// written from two branches of the same function (different "controlled body"
+// cases), both storing to the same statics, so we anchor on the guarded branch:
+//   48 83 3D ?? ?? ?? ?? 00   cmp qword [rip+disp],0
+//   74 ??                     je  short
+//   48 8B 05 ?? ?? ?? ??      mov rax,[rip+disp]    (body pointer)
+//   48 8B 90 ?? ?? 00 00      mov rdx,[rax+disp32]  (X,Y pair — struct offset
+//                                                    moves every update, so it
+//                                                    is wildcarded)
+//   48 89 15 ?? ?? ?? ??      mov [rip+disp],rdx    (disp -> player X float)
+// The overlay's "Y" is the game's third component, at X+8 (the next instruction
+// pair in the game copies [rax+disp32+8] there). Rotation is derived from X.
+// Verified against Exanima.exe 0.9.5.x (2026-09-18): struct offset 0xC44,
+// previously 0xAA4 — wildcarding it is what makes this survive updates.
 static bool AobResolvePositions(HANDLE proc) {
     if (!g_exeBase) return false;
-    const unsigned char pat[] = { 0x48,0x8B,0x90,0xA4,0x0A,0x00,0x00,
+    const unsigned char pat[] = { 0x48,0x83,0x3D,0,0,0,0,0x00,
+                                  0x74,0,
+                                  0x48,0x8B,0x05,0,0,0,0,
+                                  0x48,0x8B,0x90,0,0,0x00,0x00,
                                   0x48,0x89,0x15,0,0,0,0 };
-    const char mask[] = "xxxxxxxxxx????";
+    const char mask[] = "xxx????x"
+                        "x?"
+                        "xxx????"
+                        "xxx??xx"
+                        "xxx????";
     uintptr_t at = AobScan(proc, g_exeBase, pat, mask, sizeof(pat));
     if (!at) return false;
 
-    // the position-mirror write (48 89 15 …) is 7 bytes into the signature,
+    // the position-mirror write (48 89 15 …) is 24 bytes into the signature,
     // is 7 bytes long, with its rel32 at offset 3.
-    uintptr_t xAddr = RipTarget(proc, at, 7, 7, 3);
+    uintptr_t xAddr = RipTarget(proc, at, 24, 7, 3);
     if (!xAddr) return false;
 
     ADDR_X_POS = (LPVOID)xAddr;
     ADDR_Y_POS = (LPVOID)(xAddr + 8);
     ADDR_ROT_X = (LPVOID)(xAddr - ROT_X_FROM_X);
     ADDR_ROT_Y = (LPVOID)(xAddr - ROT_Y_FROM_X);
+    ADDR_ROT_Z = (LPVOID)(xAddr - ROT_Z_FROM_X);
     g_camRotOn = true;
     return true;
 }
@@ -769,15 +799,18 @@ void ReadMemoryOfExanima() {
             // Camera facing (2D vector, N=(0,1), E=(1,0)). The marker points along it
             // (+atan2, verified for 0.9.5g); the map turns the other way to bring that
             // facing to "up" (negated), used only in rotate_map mode.
-            if (ADDR_ROT_X && ADDR_ROT_Y) {
-                float cx = 0.f, cy = 0.f;
+            if (ADDR_ROT_X && ADDR_ROT_Y && ADDR_ROT_Z) {
+                float cx = 0.f, cy = 0.f, cz = 0.f;
                 if (ReadProcessMemory(hProcHandle, ADDR_ROT_X, &cx, sizeof(cx), 0) &&
-                    ReadProcessMemory(hProcHandle, ADDR_ROT_Y, &cy, sizeof(cy), 0)) {
-                    // Discard mid-update reads: a valid unit vector has magnitude ≈ 1.
-                    // If the two non-atomic reads straddle a game frame update (common
-                    // under Wine/Proton), the magnitude will be well off 1.0.
-                    float mag2 = cx * cx + cy * cy;
-                    if (mag2 >= 0.5f && mag2 <= 2.0f) {
+                    ReadProcessMemory(hProcHandle, ADDR_ROT_Y, &cy, sizeof(cy), 0) &&
+                    ReadProcessMemory(hProcHandle, ADDR_ROT_Z, &cz, sizeof(cz), 0)) {
+                    // Discard mid-update reads: the full 3-float vector has magnitude
+                    // ≈ 1. If the non-atomic reads straddle a game frame update (common
+                    // under Wine/Proton), the magnitude will be well off 1.0. cz itself
+                    // isn't drawn — it's the vector's near-constant vertical component,
+                    // read only so this check covers all three floats.
+                    float mag2 = cx * cx + cy * cy + cz * cz;
+                    if (mag2 >= 0.9f && mag2 <= 1.1f) {
                         float a = atan2f(cx, cy) * kRad2Deg;
                         g_markerAngle =  a;
                         g_mapAngle    = -a;
