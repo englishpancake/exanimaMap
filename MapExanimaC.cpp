@@ -234,19 +234,11 @@ static uintptr_t RipTarget(HANDLE proc, uintptr_t sigAt,
     return instr + instrLen + (intptr_t)disp;
 }
 
-// Rotation X/Y are not referenced by their own instructions (rotation is only
-// ever passed by address via lea). They sit at fixed deltas before player X in
-// the same data section — relationships that survive section shifts.
-// 2026-09-19: re-derived after the 0.9.5.x update moved the player struct
-// (position field 0xAA4 -> 0xC44) and broke the old 0x1F40/0x1FE0 rotation
-// deltas (those pointed at an unrelated, now-stale .bss slot — with no code
-// reference to re-locate by, a tedious live memory scan was the only way).
-// A live scan around the new ADDR_X_POS turned up three consecutive floats
-// immediately before it whose combined magnitude held at 1.0000 (zero
-// variance across ~140 samples, idle and moving) — a forward-facing unit
-// vector living right before position in the same entity struct. The middle
-// float stays near-constant (vertical/pitch component); the outer two swing
-// through the full ±1 range together and are the horizontal facing used here.
+// Rotation X/Y have no code reference (only ever passed by lea), so they're
+// derived as fixed deltas before player X — a forward-facing unit vector
+// living right before position in the same entity struct. Re-derived via live
+// scan 2026-09-19 after 0.9.5.x broke the old 0x1F40/0x1FE0 deltas. The middle
+// float (Z) is near-constant (pitch); X/Y swing through ±1 and drive heading.
 #define ROT_X_FROM_X  0x10
 #define ROT_Y_FROM_X  0x18
 #define ROT_Z_FROM_X  0x14
@@ -261,10 +253,9 @@ static uintptr_t RipTarget(HANDLE proc, uintptr_t sigAt,
 //                                                    moves every update, so it
 //                                                    is wildcarded)
 //   48 89 15 ?? ?? ?? ??      mov [rip+disp],rdx    (disp -> player X float)
-// The overlay's "Y" is the game's third component, at X+8 (the next instruction
-// pair in the game copies [rax+disp32+8] there). Rotation is derived from X.
-// Verified against Exanima.exe 0.9.5.x (2026-09-18): struct offset 0xC44,
-// previously 0xAA4 — wildcarding it is what makes this survive updates.
+// The overlay's "Y" is the game's third component, at X+8. Verified against
+// Exanima.exe 0.9.5.x (2026-09-18): struct offset 0xC44, previously 0xAA4 —
+// wildcarding it is what makes this survive updates.
 static bool AobResolvePositions(HANDLE proc) {
     if (!g_exeBase) return false;
     const unsigned char pat[] = { 0x48,0x83,0x3D,0,0,0,0,0x00,
